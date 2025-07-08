@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: chatbot-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PORT
+        value: 10000  # Optional default port; Render will override at runtime
