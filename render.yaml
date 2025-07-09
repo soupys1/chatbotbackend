@@ -5,8 +5,8 @@ services:
     plan: free
     buildCommand: |
       pip install --upgrade pip
-      pip install -r requirements-minimal.txt
-    startCommand: python app.py
+      pip install -r requirements.txt
+    startCommand: gunicorn app:app
     envVars:
       - key: PORT
         value: 10000
