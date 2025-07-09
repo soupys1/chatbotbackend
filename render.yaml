@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: health-chatbot-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: ENABLE_ML_MODELS
+        value: false
+      - key: PYTHON_VERSION
+        value: 3.11
+    healthCheckPath: /health
