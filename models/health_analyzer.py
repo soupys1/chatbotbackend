@@ -1,6 +1,7 @@
 import re
 import logging
 from typing import Dict, List, Any
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -9,6 +10,9 @@ logger = logging.getLogger(__name__)
 class HealthAnalyzer:
     def __init__(self):
         self.models_loaded = False
+        self.sentiment_analyzer = None
+        self.text_classifier = None
+        
         self.health_keywords = {
             'physical_symptoms': [
                 'headache', 'fever', 'cough', 'sore throat', 'nausea', 'vomiting', 'diarrhea',
@@ -129,33 +133,64 @@ class HealthAnalyzer:
             'can\'t breathe', 'choking', 'overdose', 'poisoning'
         ]
         
-        # Try to load models but don't fail if they're not available
-        self.load_models()
+        # Only try to load models if explicitly enabled
+        if os.getenv('ENABLE_ML_MODELS', 'false').lower() == 'true':
+            self.load_models()
+        else:
+            logger.info("ML models disabled, using rule-based analysis only")
     
     def load_models(self):
-        """Try to load ML models, but continue without them if they fail"""
+        """Try to load ML models with better error handling"""
         try:
-            # Try to import and load models
-            from transformers import pipeline
-            import torch
+            # Check if we're in a deployment environment that might have issues
+            if os.getenv('RENDER') or os.getenv('HEROKU'):
+                logger.info("Deployment environment detected, skipping ML model loading")
+                return
             
-            self.sentiment_analyzer = pipeline(
-                "sentiment-analysis",
-                model="cardiffnlp/twitter-roberta-base-sentiment",
-                device=0 if torch.cuda.is_available() else -1
-            )
+            # Try to import required packages
+            try:
+                from transformers import pipeline
+                import torch
+            except ImportError as e:
+                logger.warning(f"Required packages not available: {e}")
+                return
             
-            self.text_classifier = pipeline(
-                "zero-shot-classification",
-                model="facebook/bart-large-mnli",
-                device=0 if torch.cuda.is_available() else -1
-            )
+            # Try to load models with timeout and better error handling
+            logger.info("Attempting to load ML models...")
             
-            self.models_loaded = True
-            logger.info("AI models loaded successfully")
+            # Use lighter models that are more deployment-friendly
+            try:
+                self.sentiment_analyzer = pipeline(
+                    "sentiment-analysis",
+                    model="distilbert-base-uncased-finetuned-sst-2-english",
+                    device=-1,  # Force CPU to avoid GPU issues
+                    return_all_scores=True
+                )
+                logger.info("Sentiment analyzer loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load sentiment analyzer: {e}")
+                self.sentiment_analyzer = None
             
+            try:
+                self.text_classifier = pipeline(
+                    "zero-shot-classification",
+                    model="facebook/bart-large-mnli",
+                    device=-1
+                )
+                logger.info("Text classifier loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load text classifier: {e}")
+                self.text_classifier = None
+            
+            self.models_loaded = self.sentiment_analyzer is not None
+            
+            if self.models_loaded:
+                logger.info("ML models loaded successfully")
+            else:
+                logger.info("Continuing with rule-based analysis only")
+                
         except Exception as e:
-            logger.warning(f"AI models not available: {str(e)}")
+            logger.warning(f"ML model loading failed: {str(e)}")
             logger.info("Continuing with rule-based analysis")
             self.sentiment_analyzer = None
             self.text_classifier = None
@@ -203,29 +238,72 @@ class HealthAnalyzer:
         return categories
     
     def analyze_sentiment_fallback(self, text: str) -> Dict[str, Any]:
-        """Fallback sentiment analysis using keyword-based approach"""
+        """Enhanced fallback sentiment analysis using keyword-based approach"""
         text = self.preprocess_text(text)
         
-        positive_words = ['good', 'better', 'great', 'excellent', 'happy', 'relief', 'improving', 'fine', 'well', 'okay']
-        negative_words = ['bad', 'worse', 'terrible', 'awful', 'pain', 'hurt', 'sick', 'ill', 'worry', 'concerned', 'scared']
+        # More comprehensive sentiment words
+        positive_words = [
+            'good', 'better', 'great', 'excellent', 'happy', 'relief', 'improving', 
+            'fine', 'well', 'okay', 'positive', 'comfortable', 'healing', 'recovering',
+            'helpful', 'effective', 'successful', 'progress', 'improvement'
+        ]
         
-        pos_score = sum(1 for word in positive_words if word in text)
-        neg_score = sum(1 for word in negative_words if word in text)
+        negative_words = [
+            'bad', 'worse', 'terrible', 'awful', 'pain', 'hurt', 'sick', 'ill', 
+            'worry', 'concerned', 'scared', 'anxious', 'depressed', 'stressed',
+            'horrible', 'miserable', 'suffering', 'unbearable', 'severe', 'intense',
+            'overwhelming', 'frightened', 'desperate', 'hopeless'
+        ]
         
+        # Count matches with context weighting
+        pos_score = 0
+        neg_score = 0
+        
+        words = text.split()
+        for i, word in enumerate(words):
+            if word in positive_words:
+                # Check for negation in previous words
+                negated = False
+                for j in range(max(0, i-3), i):
+                    if words[j] in ['not', 'no', 'never', 'hardly', 'barely']:
+                        negated = True
+                        break
+                
+                if negated:
+                    neg_score += 1
+                else:
+                    pos_score += 1
+                    
+            elif word in negative_words:
+                # Check for negation
+                negated = False
+                for j in range(max(0, i-3), i):
+                    if words[j] in ['not', 'no', 'never', 'hardly', 'barely']:
+                        negated = True
+                        break
+                
+                if negated:
+                    pos_score += 0.5
+                else:
+                    neg_score += 1
+        
+        # Determine sentiment
         if neg_score > pos_score:
-            sentiment = 'negative'
+            sentiment = 'NEGATIVE'
             confidence = min(0.6 + (neg_score - pos_score) * 0.1, 0.9)
         elif pos_score > neg_score:
-            sentiment = 'positive' 
+            sentiment = 'POSITIVE'
             confidence = min(0.6 + (pos_score - neg_score) * 0.1, 0.9)
         else:
-            sentiment = 'neutral'
+            sentiment = 'NEUTRAL'
             confidence = 0.5
         
         return {
             'sentiment': sentiment,
             'confidence': confidence,
-            'method': 'keyword-based'
+            'method': 'enhanced-keyword-based',
+            'positive_score': pos_score,
+            'negative_score': neg_score
         }
     
     def check_emergency(self, text: str) -> Dict[str, Any]:
@@ -309,7 +387,7 @@ class HealthAnalyzer:
                 "processed_text": "",
                 "emergency_check": {"is_emergency": False, "indicators": [], "advice": None},
                 "health_categories": {"physical_symptoms": 0.0, "mental_health": 0.0, "chronic_conditions": 0.0, "lifestyle": 0.0},
-                "sentiment": {"sentiment": "neutral", "confidence": 0.5},
+                "sentiment": {"sentiment": "NEUTRAL", "confidence": 0.5},
                 "urgency_level": "low",
                 "health_advice": ["Please describe your health concern so I can provide relevant advice"],
                 "recommendation": "Please provide more details about your health concern",
@@ -327,7 +405,7 @@ class HealthAnalyzer:
                     "processed_text": "",
                     "emergency_check": {"is_emergency": False, "indicators": [], "advice": None},
                     "health_categories": {"physical_symptoms": 0.0, "mental_health": 0.0, "chronic_conditions": 0.0, "lifestyle": 0.0},
-                    "sentiment": {"sentiment": "neutral", "confidence": 0.5},
+                    "sentiment": {"sentiment": "NEUTRAL", "confidence": 0.5},
                     "urgency_level": "low",
                     "health_advice": ["Please provide a more detailed description of your health concern"],
                     "recommendation": "Please provide more details",
@@ -343,12 +421,27 @@ class HealthAnalyzer:
             # Analyze sentiment
             if self.models_loaded and self.sentiment_analyzer:
                 try:
-                    sentiment_result = self.sentiment_analyzer(processed_text)[0]
-                    # Normalize the output format
-                    if 'label' in sentiment_result:
-                        sentiment_result['sentiment'] = sentiment_result['label'].lower()
-                    if 'score' in sentiment_result:
-                        sentiment_result['confidence'] = sentiment_result['score']
+                    sentiment_results = self.sentiment_analyzer(processed_text)
+                    if isinstance(sentiment_results, list) and len(sentiment_results) > 0:
+                        if isinstance(sentiment_results[0], list):
+                            # Handle return_all_scores=True format
+                            scores = {item['label']: item['score'] for item in sentiment_results[0]}
+                            max_label = max(scores.keys(), key=lambda x: scores[x])
+                            sentiment_result = {
+                                'sentiment': max_label,
+                                'confidence': scores[max_label],
+                                'method': 'ML-based',
+                                'all_scores': scores
+                            }
+                        else:
+                            # Handle single result format
+                            sentiment_result = {
+                                'sentiment': sentiment_results[0]['label'],
+                                'confidence': sentiment_results[0]['score'],
+                                'method': 'ML-based'
+                            }
+                    else:
+                        sentiment_result = self.analyze_sentiment_fallback(processed_text)
                 except Exception as e:
                     logger.warning(f"ML sentiment analysis failed: {str(e)}")
                     sentiment_result = self.analyze_sentiment_fallback(processed_text)
@@ -366,7 +459,7 @@ class HealthAnalyzer:
                 urgency_level = "medium"
             elif health_categories['mental_health'] > 0.4:
                 urgency_level = "medium"
-            elif sentiment_result.get('sentiment') == 'negative' and sentiment_result.get('confidence', 0) > 0.6:
+            elif sentiment_result.get('sentiment', '').upper() in ['NEGATIVE'] and sentiment_result.get('confidence', 0) > 0.6:
                 urgency_level = "medium"
             
             return {
@@ -390,7 +483,7 @@ class HealthAnalyzer:
                 "processed_text": text if isinstance(text, str) else "",
                 "emergency_check": {"is_emergency": False, "indicators": [], "advice": None},
                 "health_categories": {"physical_symptoms": 0.0, "mental_health": 0.0, "chronic_conditions": 0.0, "lifestyle": 0.0},
-                "sentiment": {"sentiment": "neutral", "confidence": 0.5},
+                "sentiment": {"sentiment": "NEUTRAL", "confidence": 0.5},
                 "urgency_level": "low",
                 "health_advice": [
                     "I apologize, but I encountered an error analyzing your request",
@@ -416,3 +509,53 @@ class HealthAnalyzer:
             return "⚕️ Monitor symptoms and consult a healthcare provider if they persist or worsen"
         else:
             return "✅ Continue with healthy lifestyle practices and self-care"
+    
+    def analyze_batch(self, texts):
+        """Analyze multiple texts for health issues"""
+        if not isinstance(texts, list):
+            return [{"error": "Input must be a list of texts"}]
+        
+        results = []
+        for i, text in enumerate(texts):
+            try:
+                # Validate individual text
+                if not text or not isinstance(text, str) or not text.strip():
+                    results.append({
+                        'index': i,
+                        'error': 'Invalid or empty text',
+                        'original_text': text,
+                        'urgency_level': 'low',
+                        'health_categories': {
+                            'physical_symptoms': 0.0,
+                            'mental_health': 0.0,
+                            'chronic_conditions': 0.0,
+                            'lifestyle': 0.0
+                        },
+                        'sentiment': {'sentiment': 'NEUTRAL', 'confidence': 0.5},
+                        'health_advice': ['Please provide a valid health concern description']
+                    })
+                    continue
+                
+                # Analyze the text
+                result = self.analyze_health_issue(text)
+                result['index'] = i
+                results.append(result)
+                
+            except Exception as e:
+                logger.error(f"Error analyzing text {i}: {str(e)}")
+                results.append({
+                    'index': i,
+                    'error': str(e),
+                    'original_text': text if isinstance(text, str) else '',
+                    'urgency_level': 'low',
+                    'health_categories': {
+                        'physical_symptoms': 0.0,
+                        'mental_health': 0.0,
+                        'chronic_conditions': 0.0,
+                        'lifestyle': 0.0
+                    },
+                    'sentiment': {'sentiment': 'NEUTRAL', 'confidence': 0.5},
+                    'health_advice': ['Error occurred during analysis. Please try again.']
+                })
+        
+        return results
