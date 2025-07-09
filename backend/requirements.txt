@@ -1,9 +1,9 @@
 Flask==2.3.3
 Flask-CORS==4.0.0
-transformers==4.35.2
+transformers==4.44.0
 torch==2.5.0
 numpy==1.26.4
 gunicorn==21.2.0
-accelerate==0.24.1
+accelerate==0.33.0
 tokenizers==0.19.1
 requests==2.31.0
