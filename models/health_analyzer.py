@@ -13,29 +13,36 @@ class HealthAnalyzer:
         self.sentiment_analyzer = None
         self.text_classifier = None
         
+        # Enhanced health keywords for better detection
         self.health_keywords = {
             'physical_symptoms': [
                 'headache', 'fever', 'cough', 'sore throat', 'nausea', 'vomiting', 'diarrhea',
                 'fatigue', 'dizziness', 'chest pain', 'shortness of breath', 'back pain',
                 'joint pain', 'muscle pain', 'abdominal pain', 'rash', 'swelling',
                 'bleeding', 'bruising', 'numbness', 'tingling', 'weakness', 'pain', 'hurt',
-                'ache', 'sick', 'ill', 'tired', 'exhausted', 'dizzy', 'weak'
+                'ache', 'sick', 'ill', 'tired', 'exhausted', 'dizzy', 'weak', 'sore',
+                'stiff', 'cramp', 'spasm', 'throbbing', 'sharp pain', 'dull pain'
             ],
             'mental_health': [
                 'anxiety', 'depression', 'stress', 'panic', 'worry', 'sadness', 'hopelessness',
                 'irritability', 'mood swings', 'insomnia', 'sleep problems', 'concentration',
                 'memory', 'suicidal', 'self-harm', 'eating disorder', 'addiction', 'overwhelmed',
-                'anxious', 'depressed', 'stressed', 'worried', 'sad', 'angry', 'frustrated'
+                'anxious', 'depressed', 'stressed', 'worried', 'sad', 'angry', 'frustrated',
+                'lonely', 'isolated', 'worthless', 'guilty', 'shame', 'fear', 'scared',
+                'nervous', 'tense', 'restless', 'agitated', 'moody', 'emotional'
             ],
             'chronic_conditions': [
                 'diabetes', 'hypertension', 'asthma', 'arthritis', 'heart disease',
                 'cancer', 'thyroid', 'kidney disease', 'liver disease', 'autoimmune',
-                'chronic', 'condition', 'medication', 'treatment', 'diagnosis'
+                'chronic', 'condition', 'medication', 'treatment', 'diagnosis',
+                'high blood pressure', 'low blood pressure', 'heart condition',
+                'lung condition', 'digestive issue', 'stomach problem'
             ],
             'lifestyle': [
                 'diet', 'exercise', 'weight', 'smoking', 'alcohol', 'sleep', 'workout',
                 'nutrition', 'fitness', 'obesity', 'underweight', 'sedentary', 'food',
-                'eating', 'drinking', 'active', 'inactive', 'rest', 'energy'
+                'eating', 'drinking', 'active', 'inactive', 'rest', 'energy',
+                'lifestyle', 'habits', 'routine', 'physical activity', 'sports'
             ]
         }
         
@@ -130,85 +137,15 @@ class HealthAnalyzer:
             'chest pain', 'heart attack', 'stroke', 'severe bleeding', 'unconscious',
             'difficulty breathing', 'severe head injury', 'suicidal thoughts', 'suicide',
             'severe allergic reaction', 'broken bone', 'severe burn', 'emergency',
-            'can\'t breathe', 'choking', 'overdose', 'poisoning'
+            'can\'t breathe', 'choking', 'overdose', 'poisoning', 'cardiac arrest',
+            'severe trauma', 'life threatening', 'critical condition'
         ]
         
-        # Only try to load models if explicitly enabled
-        if os.getenv('ENABLE_ML_MODELS', 'false').lower() == 'true':
-            self.load_models()
-        else:
-            logger.info("ML models disabled, using rule-based analysis only")
-    
-    def load_models(self):
-        """Try to load ML models with better error handling"""
-        # Skip ML model loading entirely if disabled
-        if os.getenv('ENABLE_ML_MODELS', 'false').lower() != 'true':
-            logger.info("ML models disabled by environment variable, using rule-based analysis only")
-            self.sentiment_analyzer = None
-            self.text_classifier = None
-            self.models_loaded = False
-            return
-            
-        # Check if we're in a deployment environment that might have issues
-        if os.getenv('RENDER') or os.getenv('HEROKU'):
-            logger.info("Deployment environment detected, skipping ML model loading")
-            self.sentiment_analyzer = None
-            self.text_classifier = None
-            self.models_loaded = False
-            return
-        
-        try:
-            # Try to import required packages
-            try:
-                from transformers import pipeline
-                import torch
-            except ImportError as e:
-                logger.warning(f"Required packages not available: {e}")
-                self.sentiment_analyzer = None
-                self.text_classifier = None
-                self.models_loaded = False
-                return
-            
-            # Try to load models with timeout and better error handling
-            logger.info("Attempting to load ML models...")
-            
-            # Use lighter models that are more deployment-friendly
-            try:
-                self.sentiment_analyzer = pipeline(
-                    "sentiment-analysis",
-                    model="distilbert-base-uncased-finetuned-sst-2-english",
-                    device=-1,  # Force CPU to avoid GPU issues
-                    return_all_scores=True
-                )
-                logger.info("Sentiment analyzer loaded successfully")
-            except Exception as e:
-                logger.warning(f"Failed to load sentiment analyzer: {e}")
-                self.sentiment_analyzer = None
-            
-            try:
-                self.text_classifier = pipeline(
-                    "zero-shot-classification",
-                    model="facebook/bart-large-mnli",
-                    device=-1
-                )
-                logger.info("Text classifier loaded successfully")
-            except Exception as e:
-                logger.warning(f"Failed to load text classifier: {e}")
-                self.text_classifier = None
-            
-            self.models_loaded = self.sentiment_analyzer is not None
-            
-            if self.models_loaded:
-                logger.info("ML models loaded successfully")
-            else:
-                logger.info("Continuing with rule-based analysis only")
-                
-        except Exception as e:
-            logger.warning(f"ML model loading failed: {str(e)}")
-            logger.info("Continuing with rule-based analysis")
-            self.sentiment_analyzer = None
-            self.text_classifier = None
-            self.models_loaded = False
+        # Always use rule-based analysis for deployment
+        logger.info("Using rule-based health analysis (no ML models)")
+        self.sentiment_analyzer = None
+        self.text_classifier = None
+        self.models_loaded = False
     
     def preprocess_text(self, text: str) -> str:
         """Clean and preprocess text"""
@@ -433,34 +370,7 @@ class HealthAnalyzer:
             health_categories = self.detect_health_categories(processed_text)
             
             # Analyze sentiment
-            if self.models_loaded and self.sentiment_analyzer:
-                try:
-                    sentiment_results = self.sentiment_analyzer(processed_text)
-                    if isinstance(sentiment_results, list) and len(sentiment_results) > 0:
-                        if isinstance(sentiment_results[0], list):
-                            # Handle return_all_scores=True format
-                            scores = {item['label']: item['score'] for item in sentiment_results[0]}
-                            max_label = max(scores.keys(), key=lambda x: scores[x])
-                            sentiment_result = {
-                                'sentiment': max_label,
-                                'confidence': scores[max_label],
-                                'method': 'ML-based',
-                                'all_scores': scores
-                            }
-                        else:
-                            # Handle single result format
-                            sentiment_result = {
-                                'sentiment': sentiment_results[0]['label'],
-                                'confidence': sentiment_results[0]['score'],
-                                'method': 'ML-based'
-                            }
-                    else:
-                        sentiment_result = self.analyze_sentiment_fallback(processed_text)
-                except Exception as e:
-                    logger.warning(f"ML sentiment analysis failed: {str(e)}")
-                    sentiment_result = self.analyze_sentiment_fallback(processed_text)
-            else:
-                sentiment_result = self.analyze_sentiment_fallback(processed_text)
+            sentiment_result = self.analyze_sentiment_fallback(processed_text)
             
             # Generate health advice
             health_advice = self.generate_health_advice(processed_text, health_categories)
@@ -486,7 +396,7 @@ class HealthAnalyzer:
                 "health_advice": health_advice,
                 "recommendation": self._get_recommendation(urgency_level, health_categories),
                 "models_loaded": self.models_loaded,
-                "analysis_method": "ML + Rule-based" if self.models_loaded else "Rule-based"
+                "analysis_method": "Rule-based"
             }
             
         except Exception as e:

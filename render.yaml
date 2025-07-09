@@ -5,7 +5,7 @@ services:
     plan: free
     buildCommand: |
       pip install --upgrade pip
-      pip install -r requirements.txt
+      pip install -r requirements-minimal.txt
     startCommand: python app.py
     envVars:
       - key: PORT
@@ -17,5 +17,7 @@ services:
       - key: DEBUG
         value: false
       - key: PIP_NO_BUILD_ISOLATION
+        value: false
+      - key: PIP_NO_DEPENDENCIES
         value: false
     healthCheckPath: /health
