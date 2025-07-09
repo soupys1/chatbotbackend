@@ -3,11 +3,7 @@ services:
     name: health-chatbot-backend
     env: python
     plan: free
-    buildCommand: |
-      export CARGO_HOME=/tmp/cargo
-      export CARGO_TARGET_DIR=/tmp/target
-      pip install --upgrade pip
-      pip install --only-binary=tokenizers -r requirements.txt
+    buildCommand: pip install -r requirements-simple.txt
     startCommand: python app.py
     envVars:
       - key: PORT
@@ -16,8 +12,6 @@ services:
         value: false
       - key: PYTHON_VERSION
         value: 3.11
-      - key: CARGO_HOME
-        value: /tmp/cargo
-      - key: CARGO_TARGET_DIR
-        value: /tmp/target
+      - key: DEBUG
+        value: false
     healthCheckPath: /health
