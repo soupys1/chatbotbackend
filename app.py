@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import pandas as pd
+import csv
+import io
 import logging
 import os
 
@@ -88,9 +89,9 @@ def analyze_health_batch():
             if 'urgency_level' in result:
                 urgency_counts[result['urgency_level']] += 1
             
-            if 'health_categories' in result:
+            if 'health_categories' in result and isinstance(result['health_categories'], dict):
                 for category, score in result['health_categories'].items():
-                    if score > 0.3:  # Threshold for counting
+                    if isinstance(score, (int, float)) and score > 0.3:  # Threshold for counting
                         category_counts[category] += 1
         
         summary = {
@@ -126,30 +127,36 @@ def analyze_health_file():
             return jsonify({"error": "Only CSV files are supported"}), 400
         
         # Read CSV file
-        df = pd.read_csv(file.stream)
+        csv_data = file.read()
+        csv_stream = io.StringIO(csv_data.decode('utf-8'))
+        csv_reader = csv.DictReader(csv_stream)
+        
+        # Get all rows first to count them
+        rows = list(csv_reader)
+        original_rows = len(rows)
         
         # Find text column
         text_column = None
         possible_columns = ['text', 'Text', 'symptoms', 'Symptoms', 'issue', 'Issue', 'concern', 'Concern', 'description', 'Description']
-        for col in possible_columns:
-            if col in df.columns:
-                text_column = col
-                break
+        
+        if rows:
+            for col in possible_columns:
+                if col in rows[0]:
+                    text_column = col
+                    break
         
         if text_column is None:
             return jsonify({
-                "error": f"No text column found. Available columns: {list(df.columns)}"
+                "error": f"No text column found. Available columns: {list(rows[0].keys()) if rows else []}"
             }), 400
         
         # Limit number of rows for performance
-        original_rows = len(df)
-        if len(df) > 50:
-            df = df.head(50)
+        if len(rows) > 50:
+            rows = rows[:50]
             logger.info(f"Limited analysis to first 50 rows (original: {original_rows})")
         
         # Convert to string and filter valid texts
-        texts = df[text_column].astype(str).tolist()
-        texts = [text for text in texts if text and text.strip() and text != 'nan']
+        texts = [str(row[text_column]) for row in rows if row[text_column] and row[text_column].strip() and row[text_column] != 'nan']
         
         if len(texts) == 0:
             return jsonify({"error": "No valid texts found in the file"}), 400
@@ -166,9 +173,9 @@ def analyze_health_file():
             if 'urgency_level' in result:
                 urgency_counts[result['urgency_level']] += 1
             
-            if 'health_categories' in result:
+            if 'health_categories' in result and isinstance(result['health_categories'], dict):
                 for category, score in result['health_categories'].items():
-                    if score > 0.3:
+                    if isinstance(score, (int, float)) and score > 0.3:
                         category_counts[category] += 1
         
         summary = {
