@@ -18,7 +18,7 @@ CORS(app)
 # Initialize health analyzer (this will take some time on first run)
 print("Loading health analysis models...")
 health_analyzer = HealthAnalyzer()
-print("Health analysis models loaded successfully!")
+print(f"Health analysis models loaded successfully! ML available: {health_analyzer.ml_available}")
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -26,7 +26,9 @@ def health_check():
     return jsonify({
         "status": "healthy", 
         "message": "Health Analysis API is running",
-        "models": ["sentiment-analysis", "health-classification", "advice-generation"]
+        "models": ["sentiment-analysis", "health-classification", "advice-generation"],
+        "ml_available": health_analyzer.ml_available,
+        "analysis_method": "ml-enhanced" if health_analyzer.ml_available else "rule-based"
     })
 
 @app.route('/analyze-health', methods=['POST'])

@@ -7,11 +7,129 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Try to import ML dependencies, but don't fail if they're not available
+try:
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from scipy.special import softmax
+    import torch
+    ML_AVAILABLE = True
+    logger.info("ML dependencies available - will use RoBERTa for sentiment analysis")
+except ImportError:
+    ML_AVAILABLE = False
+    logger.info("ML dependencies not available - using rule-based analysis only")
+
+class RoBERTaSentimentAnalyzer:
+    def __init__(self):
+        if not ML_AVAILABLE:
+            raise ImportError("ML dependencies not available")
+        
+        self.tokenizer = None
+        self.model = None
+        self.load_model()
+    
+    def load_model(self):
+        """Load RoBERTa model for sentiment analysis"""
+        try:
+            MODEL = "cardiffnlp/twitter-roberta-base-sentiment"
+            logger.info(f"Loading {MODEL}...")
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(MODEL)
+            self.model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+            
+            logger.info("RoBERTa model loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Error loading RoBERTa model: {str(e)}")
+            raise
+    
+    def preprocess_text(self, text):
+        """Clean and preprocess text"""
+        if not isinstance(text, str):
+            return ""
+        
+        # Basic cleaning
+        text = text.strip()
+        
+        # Truncate if too long (RoBERTa has 512 token limit)
+        if len(text) > 500:  # Conservative limit to account for tokenization
+            text = text[:500]
+        
+        return text
+    
+    def analyze_text(self, text):
+        """Analyze sentiment using RoBERTa model"""
+        if not text or not isinstance(text, str):
+            return {"error": "Invalid text input"}
+        
+        if not self.tokenizer or not self.model:
+            return {"error": "RoBERTa model not loaded"}
+        
+        try:
+            # Preprocess text
+            processed_text = self.preprocess_text(text)
+            
+            if not processed_text:
+                return {"error": "Empty text after preprocessing"}
+            
+            # Tokenize
+            encoded_text = self.tokenizer(
+                processed_text, 
+                return_tensors='pt', 
+                truncation=True, 
+                max_length=512,
+                padding=True
+            )
+            
+            # Get model output
+            with torch.no_grad():
+                output = self.model(**encoded_text)
+            
+            # Convert to probabilities
+            scores = output.logits[0].detach().numpy()
+            scores = softmax(scores)
+            
+            # Map to sentiment labels
+            sentiment_labels = ['negative', 'neutral', 'positive']
+            predicted_label = sentiment_labels[scores.argmax()]
+            confidence = float(scores.max())
+            
+            return {
+                "sentiment": predicted_label,
+                "confidence": confidence,
+                "scores": {
+                    "negative": float(scores[0]),
+                    "neutral": float(scores[1]),
+                    "positive": float(scores[2])
+                },
+                "original_text": text,
+                "processed_text": processed_text,
+                "method": "roberta-ml"
+            }
+            
+        except Exception as e:
+            logger.error(f"RoBERTa analysis error: {str(e)}")
+            return {
+                "error": str(e),
+                "sentiment": "neutral",
+                "confidence": 0.0,
+                "original_text": text,
+                "method": "roberta-ml-error"
+            }
+
 class HealthAnalyzer:
     def __init__(self):
-        self.models_loaded = False
-        self.sentiment_analyzer = None
-        self.text_classifier = None
+        self.ml_available = ML_AVAILABLE
+        self.roberta_analyzer = None
+        
+        # Try to initialize ML models if available
+        if self.ml_available:
+            try:
+                self.roberta_analyzer = RoBERTaSentimentAnalyzer()
+                logger.info("ML models initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize ML models: {str(e)}")
+                self.ml_available = False
+                self.roberta_analyzer = None
         
         # Enhanced health keywords for better detection
         self.health_keywords = {
@@ -141,11 +259,7 @@ class HealthAnalyzer:
             'severe trauma', 'life threatening', 'critical condition'
         ]
         
-        # Always use rule-based analysis for deployment
-        logger.info("Using rule-based health analysis (no ML models)")
-        self.sentiment_analyzer = None
-        self.text_classifier = None
-        self.models_loaded = False
+        logger.info(f"Health analyzer initialized - ML available: {self.ml_available}")
     
     def preprocess_text(self, text: str) -> str:
         """Clean and preprocess text"""
@@ -188,6 +302,22 @@ class HealthAnalyzer:
         
         return categories
     
+    def analyze_sentiment(self, text: str) -> Dict[str, Any]:
+        """Analyze sentiment using ML if available, otherwise fallback to rule-based"""
+        if self.ml_available and self.roberta_analyzer:
+            try:
+                # Use RoBERTa ML model
+                result = self.roberta_analyzer.analyze_text(text)
+                if "error" not in result:
+                    return result
+                else:
+                    logger.warning(f"ML sentiment analysis failed, falling back to rule-based: {result.get('error')}")
+            except Exception as e:
+                logger.warning(f"ML sentiment analysis error, falling back to rule-based: {str(e)}")
+        
+        # Fallback to rule-based sentiment analysis
+        return self.analyze_sentiment_fallback(text)
+    
     def analyze_sentiment_fallback(self, text: str) -> Dict[str, Any]:
         """Enhanced fallback sentiment analysis using keyword-based approach"""
         text = self.preprocess_text(text)
@@ -200,286 +330,182 @@ class HealthAnalyzer:
         ]
         
         negative_words = [
-            'bad', 'worse', 'terrible', 'awful', 'pain', 'hurt', 'sick', 'ill', 
-            'worry', 'concerned', 'scared', 'anxious', 'depressed', 'stressed',
-            'horrible', 'miserable', 'suffering', 'unbearable', 'severe', 'intense',
-            'overwhelming', 'frightened', 'desperate', 'hopeless'
+            'bad', 'worse', 'terrible', 'awful', 'painful', 'suffering', 'agony',
+            'horrible', 'dreadful', 'miserable', 'unbearable', 'intense', 'severe',
+            'chronic', 'persistent', 'debilitating', 'disabling', 'crippling'
         ]
         
-        # Count matches with context weighting
-        pos_score = 0
-        neg_score = 0
+        # Count sentiment words
+        positive_count = sum(1 for word in positive_words if word in text)
+        negative_count = sum(1 for word in negative_words if word in text)
         
-        words = text.split()
-        for i, word in enumerate(words):
-            if word in positive_words:
-                # Check for negation in previous words
-                negated = False
-                for j in range(max(0, i-3), i):
-                    if words[j] in ['not', 'no', 'never', 'hardly', 'barely']:
-                        negated = True
-                        break
-                
-                if negated:
-                    neg_score += 1
-                else:
-                    pos_score += 1
-                    
-            elif word in negative_words:
-                # Check for negation
-                negated = False
-                for j in range(max(0, i-3), i):
-                    if words[j] in ['not', 'no', 'never', 'hardly', 'barely']:
-                        negated = True
-                        break
-                
-                if negated:
-                    pos_score += 0.5
-                else:
-                    neg_score += 1
-        
-        # Determine sentiment
-        if neg_score > pos_score:
-            sentiment = 'NEGATIVE'
-            confidence = min(0.6 + (neg_score - pos_score) * 0.1, 0.9)
-        elif pos_score > neg_score:
-            sentiment = 'POSITIVE'
-            confidence = min(0.6 + (pos_score - neg_score) * 0.1, 0.9)
+        # Calculate sentiment score
+        total_sentiment_words = positive_count + negative_count
+        if total_sentiment_words == 0:
+            sentiment_score = 0.5  # Neutral
         else:
-            sentiment = 'NEUTRAL'
-            confidence = 0.5
+            sentiment_score = positive_count / total_sentiment_words
+        
+        # Determine sentiment label
+        if sentiment_score > 0.6:
+            sentiment_label = "positive"
+        elif sentiment_score < 0.4:
+            sentiment_label = "negative"
+        else:
+            sentiment_label = "neutral"
         
         return {
-            'sentiment': sentiment,
-            'confidence': confidence,
-            'method': 'enhanced-keyword-based',
-            'positive_score': pos_score,
-            'negative_score': neg_score
+            "sentiment": sentiment_label,
+            "confidence": min(abs(sentiment_score - 0.5) * 2, 1.0),
+            "positive_score": positive_count,
+            "negative_score": negative_count,
+            "method": "rule-based"
         }
     
     def check_emergency(self, text: str) -> Dict[str, Any]:
         """Check if the text indicates an emergency situation"""
         text = self.preprocess_text(text)
         
-        emergency_indicators = []
+        emergency_detected = False
+        emergency_keywords_found = []
+        
         for keyword in self.emergency_keywords:
             if keyword in text:
-                emergency_indicators.append(keyword)
-        
-        is_emergency = len(emergency_indicators) > 0
+                emergency_detected = True
+                emergency_keywords_found.append(keyword)
         
         return {
-            'is_emergency': is_emergency,
-            'indicators': emergency_indicators,
-            'advice': "⚠️ EMERGENCY: Call emergency services (911) immediately!" if is_emergency else None
+            "is_emergency": emergency_detected,
+            "emergency_keywords": emergency_keywords_found,
+            "recommendation": "Call emergency services immediately" if emergency_detected else None
         }
     
     def generate_health_advice(self, text: str, categories: Dict[str, float]) -> List[str]:
-        """Generate health advice based on detected categories and text"""
-        advice = []
+        """Generate health advice based on detected categories"""
         text = self.preprocess_text(text)
+        advice = []
         
-        # Check for specific symptoms and provide targeted advice
-        advice_given = False
+        # Find the most relevant category
+        max_category = max(categories.items(), key=lambda x: x[1])
         
-        for category, score in categories.items():
-            if score > 0.2:  # Lower threshold for more responsive advice
-                if category in self.health_advice:
-                    category_advice = self.health_advice[category]
-                    
-                    # Find specific symptoms mentioned
-                    for symptom, symptom_advice in category_advice.items():
-                        if symptom in text:
-                            advice.extend(symptom_advice[:2])  # Take first 2 pieces of advice
-                            advice_given = True
-                            break
-                    
-                    # If no specific symptom found, provide general category advice
-                    if not advice_given:
-                        if category == 'physical_symptoms':
-                            advice.append("Monitor your symptoms and consider consulting a healthcare provider")
-                            advice.append("Rest and stay hydrated while recovering")
-                        elif category == 'mental_health':
-                            advice.append("Consider speaking with a mental health professional")
-                            advice.append("Practice self-care and reach out for support")
-                        elif category == 'lifestyle':
-                            advice.append("Consider making gradual, sustainable lifestyle changes")
-                            advice.append("Focus on one area of improvement at a time")
-                        
-                        advice_given = True
+        if max_category[1] > 0.3:  # Only provide advice if category is detected
+            category_name = max_category[0]
+            
+            # Look for specific symptoms in the text
+            for symptom, symptom_advice in self.health_advice.get(category_name, {}).items():
+                if symptom in text:
+                    advice.extend(symptom_advice[:3])  # Take first 3 pieces of advice
+                    break
+            
+            # If no specific symptom advice, provide general category advice
+            if not advice and category_name in self.health_advice:
+                general_advice = self.health_advice[category_name]
+                if general_advice:
+                    # Take advice from the first available subcategory
+                    first_subcategory = list(general_advice.values())[0]
+                    advice.extend(first_subcategory[:3])
         
         # Add general health advice if no specific advice was generated
-        if not advice_given:
+        if not advice:
             advice = [
-                "Thank you for sharing your health concern with me",
-                "Consider consulting a healthcare provider for personalized advice",
-                "Maintain healthy lifestyle habits: balanced diet, regular exercise, adequate sleep",
-                "Stay hydrated and listen to your body's needs"
+                "Consider consulting with a healthcare provider for personalized advice",
+                "Maintain a healthy lifestyle with regular exercise and balanced nutrition",
+                "Keep track of your symptoms and any changes over time"
             ]
         
-        # Remove duplicates and limit to 4 pieces of advice
-        unique_advice = []
-        seen = set()
-        for item in advice:
-            if item not in seen:
-                unique_advice.append(item)
-                seen.add(item)
-        
-        return unique_advice[:4]
+        return advice[:5]  # Limit to 5 pieces of advice
     
     def analyze_health_issue(self, text: str) -> Dict[str, Any]:
-        """Main method to analyze health issues and provide advice"""
-        
-        # Input validation
-        if not text or not isinstance(text, str):
-            return {
-                "error": "Please provide a valid text description of your health concern",
-                "original_text": text,
-                "processed_text": "",
-                "emergency_check": {"is_emergency": False, "indicators": [], "advice": None},
-                "health_categories": {"physical_symptoms": 0.0, "mental_health": 0.0, "chronic_conditions": 0.0, "lifestyle": 0.0},
-                "sentiment": {"sentiment": "NEUTRAL", "confidence": 0.5},
-                "urgency_level": "low",
-                "health_advice": ["Please describe your health concern so I can provide relevant advice"],
-                "recommendation": "Please provide more details about your health concern",
-                "models_loaded": self.models_loaded
-            }
-        
+        """Main method to analyze health issues and provide comprehensive response"""
         try:
+            if not text or not isinstance(text, str):
+                return {
+                    "error": "Invalid input: text must be a non-empty string",
+                    "success": False
+                }
+            
             # Preprocess text
             processed_text = self.preprocess_text(text)
             
             if not processed_text:
                 return {
-                    "error": "Please provide a more detailed description",
-                    "original_text": text,
-                    "processed_text": "",
-                    "emergency_check": {"is_emergency": False, "indicators": [], "advice": None},
-                    "health_categories": {"physical_symptoms": 0.0, "mental_health": 0.0, "chronic_conditions": 0.0, "lifestyle": 0.0},
-                    "sentiment": {"sentiment": "NEUTRAL", "confidence": 0.5},
-                    "urgency_level": "low",
-                    "health_advice": ["Please provide a more detailed description of your health concern"],
-                    "recommendation": "Please provide more details",
-                    "models_loaded": self.models_loaded
+                    "error": "Text is empty after preprocessing",
+                    "success": False
                 }
             
-            # Check for emergency situations first
+            # Analyze different aspects
+            categories = self.detect_health_categories(processed_text)
+            sentiment = self.analyze_sentiment(processed_text)
             emergency_check = self.check_emergency(processed_text)
             
-            # Detect health categories
-            health_categories = self.detect_health_categories(processed_text)
-            
-            # Analyze sentiment
-            sentiment_result = self.analyze_sentiment_fallback(processed_text)
-            
-            # Generate health advice
-            health_advice = self.generate_health_advice(processed_text, health_categories)
-            
             # Determine urgency level
-            urgency_level = "low"
-            if emergency_check['is_emergency']:
-                urgency_level = "emergency"
-            elif health_categories['physical_symptoms'] > 0.4:
-                urgency_level = "medium"
-            elif health_categories['mental_health'] > 0.4:
-                urgency_level = "medium"
-            elif sentiment_result.get('sentiment', '').upper() in ['NEGATIVE'] and sentiment_result.get('confidence', 0) > 0.6:
-                urgency_level = "medium"
+            urgency_level = self._get_urgency_level(emergency_check, categories, sentiment)
+            
+            # Generate advice
+            advice = self.generate_health_advice(processed_text, categories)
+            
+            # Get recommendation
+            recommendation = self._get_recommendation(urgency_level, categories)
             
             return {
-                "original_text": text,
-                "processed_text": processed_text,
-                "emergency_check": emergency_check,
-                "health_categories": health_categories,
-                "sentiment": sentiment_result,
+                "success": True,
+                "text": text,
+                "health_categories": categories,
+                "sentiment_analysis": sentiment,
+                "emergency_detection": emergency_check,
                 "urgency_level": urgency_level,
-                "health_advice": health_advice,
-                "recommendation": self._get_recommendation(urgency_level, health_categories),
-                "models_loaded": self.models_loaded,
-                "analysis_method": "Rule-based"
+                "advice": advice,
+                "recommendation": recommendation,
+                "analysis_method": "ml-enhanced" if self.ml_available else "rule-based",
+                "ml_available": self.ml_available
             }
             
         except Exception as e:
-            logger.error(f"Health analysis error: {str(e)}")
+            logger.error(f"Error in health analysis: {str(e)}")
             return {
-                "error": f"Analysis error: {str(e)}",
-                "original_text": text,
-                "processed_text": text if isinstance(text, str) else "",
-                "emergency_check": {"is_emergency": False, "indicators": [], "advice": None},
-                "health_categories": {"physical_symptoms": 0.0, "mental_health": 0.0, "chronic_conditions": 0.0, "lifestyle": 0.0},
-                "sentiment": {"sentiment": "NEUTRAL", "confidence": 0.5},
-                "urgency_level": "low",
-                "health_advice": [
-                    "I apologize, but I encountered an error analyzing your request",
-                    "Please try rephrasing your health concern",
-                    "For serious health issues, please consult a healthcare provider"
-                ],
-                "recommendation": "Please try again or consult a healthcare provider",
-                "models_loaded": self.models_loaded
+                "error": f"Analysis failed: {str(e)}",
+                "success": False
             }
     
-    def _get_recommendation(self, urgency_level: str, categories: Dict[str, float]) -> str:
-        """Get recommendation based on urgency and health categories"""
-        if urgency_level == "emergency":
-            return "🚨 Seek immediate medical attention or call emergency services"
-        elif urgency_level == "medium":
-            if categories['mental_health'] > 0.4:
-                return "💭 Consider speaking with a mental health professional soon"
-            else:
-                return "⚕️ Consider consulting a healthcare provider in the near future"
-        elif categories['mental_health'] > 0.3:
-            return "💭 Consider speaking with a mental health professional"
-        elif categories['physical_symptoms'] > 0.3:
-            return "⚕️ Monitor symptoms and consult a healthcare provider if they persist or worsen"
-        else:
-            return "✅ Continue with healthy lifestyle practices and self-care"
-    
-    def analyze_batch(self, texts):
-        """Analyze multiple texts for health issues"""
-        if not isinstance(texts, list):
-            return [{"error": "Input must be a list of texts"}]
+    def _get_urgency_level(self, emergency_check: Dict, categories: Dict, sentiment: Dict) -> str:
+        """Determine urgency level based on analysis results"""
+        if emergency_check.get("is_emergency", False):
+            return "emergency"
         
+        # Check for high negative sentiment
+        if sentiment.get("sentiment") == "negative" and sentiment.get("confidence", 0) > 0.7:
+            return "medium"
+        
+        # Check for high category scores
+        max_category_score = max(categories.values())
+        if max_category_score > 0.7:
+            return "medium"
+        
+        return "low"
+    
+    def _get_recommendation(self, urgency_level: str, categories: Dict[str, float]) -> str:
+        """Get recommendation based on urgency level and categories"""
+        if urgency_level == "emergency":
+            return "Seek immediate medical attention or call emergency services."
+        elif urgency_level == "medium":
+            return "Consider consulting a healthcare provider for evaluation."
+        else:
+            return "Monitor symptoms and consider lifestyle modifications."
+    
+    def analyze_batch(self, texts: List[str]) -> List[Dict[str, Any]]:
+        """Analyze multiple texts in batch"""
         results = []
-        for i, text in enumerate(texts):
+        
+        for text in texts:
             try:
-                # Validate individual text
-                if not text or not isinstance(text, str) or not text.strip():
-                    results.append({
-                        'index': i,
-                        'error': 'Invalid or empty text',
-                        'original_text': text,
-                        'urgency_level': 'low',
-                        'health_categories': {
-                            'physical_symptoms': 0.0,
-                            'mental_health': 0.0,
-                            'chronic_conditions': 0.0,
-                            'lifestyle': 0.0
-                        },
-                        'sentiment': {'sentiment': 'NEUTRAL', 'confidence': 0.5},
-                        'health_advice': ['Please provide a valid health concern description']
-                    })
-                    continue
-                
-                # Analyze the text
                 result = self.analyze_health_issue(text)
-                result['index'] = i
                 results.append(result)
-                
             except Exception as e:
-                logger.error(f"Error analyzing text {i}: {str(e)}")
+                logger.error(f"Error analyzing text '{text[:50]}...': {str(e)}")
                 results.append({
-                    'index': i,
-                    'error': str(e),
-                    'original_text': text if isinstance(text, str) else '',
-                    'urgency_level': 'low',
-                    'health_categories': {
-                        'physical_symptoms': 0.0,
-                        'mental_health': 0.0,
-                        'chronic_conditions': 0.0,
-                        'lifestyle': 0.0
-                    },
-                    'sentiment': {'sentiment': 'NEUTRAL', 'confidence': 0.5},
-                    'health_advice': ['Error occurred during analysis. Please try again.']
+                    "error": f"Analysis failed: {str(e)}",
+                    "success": False,
+                    "text": text
                 })
         
         return results
