@@ -3,7 +3,9 @@ services:
     name: health-chatbot-backend
     env: python
     plan: free
-    buildCommand: pip install -r requirements-simple.txt
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
     startCommand: python app.py
     envVars:
       - key: PORT
@@ -13,5 +15,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.11
       - key: DEBUG
+        value: false
+      - key: PIP_NO_BUILD_ISOLATION
         value: false
     healthCheckPath: /health

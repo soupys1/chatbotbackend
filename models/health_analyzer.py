@@ -141,18 +141,32 @@ class HealthAnalyzer:
     
     def load_models(self):
         """Try to load ML models with better error handling"""
-        try:
-            # Check if we're in a deployment environment that might have issues
-            if os.getenv('RENDER') or os.getenv('HEROKU'):
-                logger.info("Deployment environment detected, skipping ML model loading")
-                return
+        # Skip ML model loading entirely if disabled
+        if os.getenv('ENABLE_ML_MODELS', 'false').lower() != 'true':
+            logger.info("ML models disabled by environment variable, using rule-based analysis only")
+            self.sentiment_analyzer = None
+            self.text_classifier = None
+            self.models_loaded = False
+            return
             
+        # Check if we're in a deployment environment that might have issues
+        if os.getenv('RENDER') or os.getenv('HEROKU'):
+            logger.info("Deployment environment detected, skipping ML model loading")
+            self.sentiment_analyzer = None
+            self.text_classifier = None
+            self.models_loaded = False
+            return
+        
+        try:
             # Try to import required packages
             try:
                 from transformers import pipeline
                 import torch
             except ImportError as e:
                 logger.warning(f"Required packages not available: {e}")
+                self.sentiment_analyzer = None
+                self.text_classifier = None
+                self.models_loaded = False
                 return
             
             # Try to load models with timeout and better error handling
