@@ -25,10 +25,10 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         "status": "healthy", 
-        "message": "Health Analysis API is running",
-        "models": ["sentiment-analysis", "health-classification", "advice-generation"],
-        "ml_available": health_analyzer.ml_available,
-        "analysis_method": "ml-enhanced" if health_analyzer.ml_available else "rule-based"
+        "message": "Health Analysis API is running (ML-powered, RoBERTa)",
+        "models": ["sentiment-analysis (RoBERTa)", "health-classification", "advice-generation"],
+        "ml_available": True,
+        "analysis_method": "ml-roberta"
     })
 
 @app.route('/analyze-health', methods=['POST'])

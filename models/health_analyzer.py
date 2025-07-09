@@ -7,129 +7,71 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Try to import ML dependencies, but don't fail if they're not available
-try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    from scipy.special import softmax
-    import torch
-    ML_AVAILABLE = True
-    logger.info("ML dependencies available - will use RoBERTa for sentiment analysis")
-except ImportError:
-    ML_AVAILABLE = False
-    logger.info("ML dependencies not available - using rule-based analysis only")
+# Always require ML dependencies for Render deployment
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from scipy.special import softmax
+import torch
 
 class RoBERTaSentimentAnalyzer:
     def __init__(self):
-        if not ML_AVAILABLE:
-            raise ImportError("ML dependencies not available")
-        
         self.tokenizer = None
         self.model = None
         self.load_model()
     
     def load_model(self):
-        """Load RoBERTa model for sentiment analysis"""
-        try:
-            MODEL = "cardiffnlp/twitter-roberta-base-sentiment"
-            logger.info(f"Loading {MODEL}...")
-            
-            self.tokenizer = AutoTokenizer.from_pretrained(MODEL)
-            self.model = AutoModelForSequenceClassification.from_pretrained(MODEL)
-            
-            logger.info("RoBERTa model loaded successfully")
-            
-        except Exception as e:
-            logger.error(f"Error loading RoBERTa model: {str(e)}")
-            raise
+        MODEL = "cardiffnlp/twitter-roberta-base-sentiment"
+        logger.info(f"Loading {MODEL}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL)
+        self.model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+        logger.info("RoBERTa model loaded successfully")
     
     def preprocess_text(self, text):
-        """Clean and preprocess text"""
         if not isinstance(text, str):
             return ""
-        
-        # Basic cleaning
         text = text.strip()
-        
-        # Truncate if too long (RoBERTa has 512 token limit)
-        if len(text) > 500:  # Conservative limit to account for tokenization
+        if len(text) > 500:
             text = text[:500]
-        
         return text
     
     def analyze_text(self, text):
-        """Analyze sentiment using RoBERTa model"""
         if not text or not isinstance(text, str):
             return {"error": "Invalid text input"}
-        
         if not self.tokenizer or not self.model:
             return {"error": "RoBERTa model not loaded"}
-        
-        try:
-            # Preprocess text
-            processed_text = self.preprocess_text(text)
-            
-            if not processed_text:
-                return {"error": "Empty text after preprocessing"}
-            
-            # Tokenize
-            encoded_text = self.tokenizer(
-                processed_text, 
-                return_tensors='pt', 
-                truncation=True, 
-                max_length=512,
-                padding=True
-            )
-            
-            # Get model output
-            with torch.no_grad():
-                output = self.model(**encoded_text)
-            
-            # Convert to probabilities
-            scores = output.logits[0].detach().numpy()
-            scores = softmax(scores)
-            
-            # Map to sentiment labels
-            sentiment_labels = ['negative', 'neutral', 'positive']
-            predicted_label = sentiment_labels[scores.argmax()]
-            confidence = float(scores.max())
-            
-            return {
-                "sentiment": predicted_label,
-                "confidence": confidence,
-                "scores": {
-                    "negative": float(scores[0]),
-                    "neutral": float(scores[1]),
-                    "positive": float(scores[2])
-                },
-                "original_text": text,
-                "processed_text": processed_text,
-                "method": "roberta-ml"
-            }
-            
-        except Exception as e:
-            logger.error(f"RoBERTa analysis error: {str(e)}")
-            return {
-                "error": str(e),
-                "sentiment": "neutral",
-                "confidence": 0.0,
-                "original_text": text,
-                "method": "roberta-ml-error"
-            }
+        processed_text = self.preprocess_text(text)
+        if not processed_text:
+            return {"error": "Empty text after preprocessing"}
+        encoded_text = self.tokenizer(
+            processed_text, 
+            return_tensors='pt', 
+            truncation=True, 
+            max_length=512,
+            padding=True
+        )
+        with torch.no_grad():
+            output = self.model(**encoded_text)
+        scores = output.logits[0].detach().numpy()
+        scores = softmax(scores)
+        sentiment_labels = ['negative', 'neutral', 'positive']
+        predicted_label = sentiment_labels[scores.argmax()]
+        confidence = float(scores.max())
+        return {
+            "sentiment": predicted_label,
+            "confidence": confidence,
+            "scores": {
+                "negative": float(scores[0]),
+                "neutral": float(scores[1]),
+                "positive": float(scores[2])
+            },
+            "original_text": text,
+            "processed_text": processed_text,
+            "method": "roberta-ml"
+        }
 
 class HealthAnalyzer:
     def __init__(self):
-        self.ml_available = ML_AVAILABLE
-        self.roberta_analyzer = None
-        
-        # Try to initialize ML models if available
-        if self.ml_available:
-            try:
-                self.roberta_analyzer = RoBERTaSentimentAnalyzer()
-                logger.info("ML models initialized successfully")
-            except Exception as e:
-                logger.warning(f"Failed to initialize ML models: {str(e)}")
-                self.ml_available = False
-                self.roberta_analyzer = None
+        self.roberta_analyzer = RoBERTaSentimentAnalyzer()
+        logger.info("ML models initialized successfully (RoBERTa)")
         
         # Enhanced health keywords for better detection
         self.health_keywords = {
@@ -259,7 +201,7 @@ class HealthAnalyzer:
             'severe trauma', 'life threatening', 'critical condition'
         ]
         
-        logger.info(f"Health analyzer initialized - ML available: {self.ml_available}")
+        logger.info("Health analyzer initialized - ML available: True")
     
     def preprocess_text(self, text: str) -> str:
         """Clean and preprocess text"""
@@ -303,64 +245,7 @@ class HealthAnalyzer:
         return categories
     
     def analyze_sentiment(self, text: str) -> Dict[str, Any]:
-        """Analyze sentiment using ML if available, otherwise fallback to rule-based"""
-        if self.ml_available and self.roberta_analyzer:
-            try:
-                # Use RoBERTa ML model
-                result = self.roberta_analyzer.analyze_text(text)
-                if "error" not in result:
-                    return result
-                else:
-                    logger.warning(f"ML sentiment analysis failed, falling back to rule-based: {result.get('error')}")
-            except Exception as e:
-                logger.warning(f"ML sentiment analysis error, falling back to rule-based: {str(e)}")
-        
-        # Fallback to rule-based sentiment analysis
-        return self.analyze_sentiment_fallback(text)
-    
-    def analyze_sentiment_fallback(self, text: str) -> Dict[str, Any]:
-        """Enhanced fallback sentiment analysis using keyword-based approach"""
-        text = self.preprocess_text(text)
-        
-        # More comprehensive sentiment words
-        positive_words = [
-            'good', 'better', 'great', 'excellent', 'happy', 'relief', 'improving', 
-            'fine', 'well', 'okay', 'positive', 'comfortable', 'healing', 'recovering',
-            'helpful', 'effective', 'successful', 'progress', 'improvement'
-        ]
-        
-        negative_words = [
-            'bad', 'worse', 'terrible', 'awful', 'painful', 'suffering', 'agony',
-            'horrible', 'dreadful', 'miserable', 'unbearable', 'intense', 'severe',
-            'chronic', 'persistent', 'debilitating', 'disabling', 'crippling'
-        ]
-        
-        # Count sentiment words
-        positive_count = sum(1 for word in positive_words if word in text)
-        negative_count = sum(1 for word in negative_words if word in text)
-        
-        # Calculate sentiment score
-        total_sentiment_words = positive_count + negative_count
-        if total_sentiment_words == 0:
-            sentiment_score = 0.5  # Neutral
-        else:
-            sentiment_score = positive_count / total_sentiment_words
-        
-        # Determine sentiment label
-        if sentiment_score > 0.6:
-            sentiment_label = "positive"
-        elif sentiment_score < 0.4:
-            sentiment_label = "negative"
-        else:
-            sentiment_label = "neutral"
-        
-        return {
-            "sentiment": sentiment_label,
-            "confidence": min(abs(sentiment_score - 0.5) * 2, 1.0),
-            "positive_score": positive_count,
-            "negative_score": negative_count,
-            "method": "rule-based"
-        }
+        return self.roberta_analyzer.analyze_text(text)
     
     def check_emergency(self, text: str) -> Dict[str, Any]:
         """Check if the text indicates an emergency situation"""
@@ -456,8 +341,8 @@ class HealthAnalyzer:
                 "urgency_level": urgency_level,
                 "advice": advice,
                 "recommendation": recommendation,
-                "analysis_method": "ml-enhanced" if self.ml_available else "rule-based",
-                "ml_available": self.ml_available
+                "analysis_method": "ml-roberta",
+                "ml_available": True
             }
             
         except Exception as e:
